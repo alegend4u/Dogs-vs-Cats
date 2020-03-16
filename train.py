@@ -1,25 +1,16 @@
 import pathlib
 import tensorflow as tf
 import numpy as np
+import csv
 import matplotlib.pyplot as plt
 from model import MyModel
 
 print("GPU: ", len(tf.config.list_physical_devices('GPU')) > 0)
 
-train_path = pathlib.Path('data/train')
-test_path = pathlib.Path('data/test')
-
-NO_OF_SAMPLES = len(list(train_path.glob('**/*.jpg')))
-CLASSES = np.array([dire.name for dire in train_path.iterdir()])
-
 BATCH_SIZE = 64
 IMAGE_HEIGHT = 112
 IMAGE_WIDTH = 112
-STEPS_PER_EPOCH = np.ceil(NO_OF_SAMPLES / BATCH_SIZE)
-
-list_ds = tf.data.Dataset.list_files(str(train_path / '*/*'))
-for f in list_ds.take(1):
-    print(f)
+CLASSES = np.array(['cat', 'dog'])
 
 
 def get_label(file_path):
@@ -41,6 +32,14 @@ def process_path(file_path):
     return img, label
 
 
+def test_process_path(file_path):
+    label = get_label(file_path)
+    img = tf.io.read_file(file_path)
+    img = decode_img(img)
+    img = tf.expand_dims(img, 0)
+    return img, label
+
+
 def prepare_for_training(ds, cache=True, shuffle_buffer_size=1000, batch_size=BATCH_SIZE):
     if cache:
         if isinstance(cache, str):
@@ -54,49 +53,38 @@ def prepare_for_training(ds, cache=True, shuffle_buffer_size=1000, batch_size=BA
     return ds
 
 
-def show_batch(images, labels):
-    for i in range(10):
-        plt.subplot(2, 5, i + 1)
-        plt.imshow(images[i])
-        plt.title(CLASSES[labels[i]])
-        plt.axis('off')
-    plt.show()
-
-
-labeled_ds = list_ds.map(
-    process_path,
-    num_parallel_calls=tf.data.experimental.AUTOTUNE
-)
-
-dataset = prepare_for_training(labeled_ds)
-
-image_batch, label_batch = next(iter(dataset))
-# show_batch(image_batch.numpy(), label_batch.numpy())
-
-# Split the dataset
-train_size = np.ceil(NO_OF_SAMPLES / BATCH_SIZE * 0.7)
-val_size = np.ceil(NO_OF_SAMPLES / BATCH_SIZE * 0.3)
-
-train_ds = dataset.take(train_size)
-val_ds = dataset.skip(train_size).take(val_size)
-test_ds = dataset.skip(train_size + val_size)
-
-model = MyModel()
-
-optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
-
-checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=model)
-manager = tf.train.CheckpointManager(
-    checkpoint, directory="checkpoints", max_to_keep=5
-)
-checkpoint.restore(manager.latest_checkpoint)
-if manager.latest_checkpoint:
-    print("Restored from {}".format(manager.latest_checkpoint))
-else:
-    print("Initializing from scratch.")
+# def show_batch(images, labels):
+#     for i in range(10):
+#         plt.subplot(2, 5, i + 1)
+#         plt.imshow(images[i])
+#         plt.title(CLASSES[labels[i]])
+#         plt.axis('off')
+#     plt.show()
 
 
 def train():
+    train_path = pathlib.Path('data/train')
+
+    no_of_samples = len(list(train_path.glob('**/*.jpg')))
+
+    steps_per_epoch = np.ceil(no_of_samples / BATCH_SIZE)
+    list_ds = tf.data.Dataset.list_files(str(train_path / '*/*'))
+    labeled_ds = list_ds.map(
+        process_path,
+        num_parallel_calls=tf.data.experimental.AUTOTUNE
+    )
+
+    dataset = prepare_for_training(labeled_ds)
+
+    # image_batch, label_batch = next(iter(dataset))
+    # show_batch(image_batch.numpy(), label_batch.numpy())
+
+    # Split the dataset
+    train_size = np.ceil(no_of_samples / BATCH_SIZE * 0.7)
+    val_size = np.ceil(no_of_samples / BATCH_SIZE * 0.3)
+
+    train_ds = dataset.take(train_size)
+    val_ds = dataset.skip(train_size).take(val_size)
     loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=True)
 
     train_loss = tf.keras.metrics.Mean(name='train_loss')
@@ -106,28 +94,28 @@ def train():
     val_accuracy = tf.keras.metrics.BinaryAccuracy(name='test_accuracy')
 
     @tf.function
-    def train_step(images, labels):
+    def train_step(b_images, b_labels):
         with tf.GradientTape() as tape:
-            predictions = model(images, training=True)
-            loss = loss_fn(labels, predictions)
+            predictions = model(b_images, training=True)
+            loss = loss_fn(b_labels, predictions)
             gradients = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
 
         train_loss(loss)
-        train_accuracy(labels, predictions)
+        train_accuracy(b_labels, predictions)
 
     @tf.function
-    def val_step(images, labels):
-        predictions = model(images, training=True)
-        loss = loss_fn(labels, predictions)
+    def val_step(b_images, b_labels):
+        predictions = model(b_images, training=True)
+        loss = loss_fn(b_labels, predictions)
 
         val_loss(loss)
-        val_accuracy(labels, predictions)
+        val_accuracy(b_labels, predictions)
 
     # model.build()
     # model.summary()
-    epochs = 20
-    print("Steps per epochs:", STEPS_PER_EPOCH)
+    epochs = 10
+    print("Steps per epochs:", steps_per_epoch)
     print("Training...")
     prev_loss = np.inf
 
@@ -159,7 +147,30 @@ def train():
             manager.save()
 
 
+def kaggle_test(test_path):
+    output_file = 'output.csv'
+    with open(output_file, 'w') as f:
+        writer = csv.writer(f, delimiter=',')
+        writer.writerow(['id', 'label'])
+    test_path = pathlib.Path(test_path)
+
+    for img_id in range(1, 12501):
+        file = "{}/{}.jpg".format(test_path, img_id)
+        image = tf.io.read_file(file)
+        image = decode_img(image)
+        input_image = tf.expand_dims(image, 0)
+        prediction = model(input_image, training=False)
+
+        prediction = int(prediction > 0)
+        result = [img_id, prediction]
+        # print(*result, sep=',')
+        with open(output_file, 'a+') as f:
+            writer = csv.writer(f, delimiter=',')
+            writer.writerow(result)
+
+
 def test():
+    test_path = pathlib.Path('data/test')
     test_list_ds = tf.data.Dataset.list_files(str(test_path / '*/*'))
     test_labeled_ds = test_list_ds.map(
         process_path,
@@ -174,5 +185,17 @@ def test():
 
 
 if __name__ == "__main__":
-    train()
+    model = MyModel()
+
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+    checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=model)
+    manager = tf.train.CheckpointManager(checkpoint, directory="checkpoints", max_to_keep=5)
+    checkpoint.restore(manager.latest_checkpoint)
+    if manager.latest_checkpoint:
+        print("Restored from {}".format(manager.latest_checkpoint))
+    else:
+        print("Initializing from scratch.")
+
+    # train()
     # test()
+    kaggle_test('data/test1')
