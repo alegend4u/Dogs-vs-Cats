@@ -1,3 +1,4 @@
+import random
 import pathlib
 import tensorflow as tf
 import numpy as np
@@ -22,13 +23,30 @@ def get_label(file_path):
 def decode_img(img):
     img = tf.image.decode_jpeg(img, channels=3)
     img = tf.image.convert_image_dtype(img, tf.float32)
-    return tf.image.resize(img, [IMAGE_WIDTH, IMAGE_HEIGHT])
+    return img
+
+
+def preprocess(img):
+    # Augment
+    img = tf.image.random_flip_left_right(img)
+    img = tf.image.random_brightness(img, 0.5)
+    img = tf.image.random_contrast(img, 1, 2)
+    img = random.choice([img, tf.image.central_crop(img, 0.6)])
+    img = tf.image.random_saturation(img, 1, 3)
+    img = tf.image.random_flip_up_down(img)
+
+    img = tf.image.resize(img, [IMAGE_WIDTH, IMAGE_HEIGHT])
+    # Normalize
+    img = img / 255.
+
+    return img
 
 
 def process_path(file_path):
     label = get_label(file_path)
     img = tf.io.read_file(file_path)
     img = decode_img(img)
+    img = preprocess(img)
     return img, label
 
 
@@ -53,13 +71,13 @@ def prepare_for_training(ds, cache=True, shuffle_buffer_size=1000, batch_size=BA
     return ds
 
 
-# def show_batch(images, labels):
-#     for i in range(10):
-#         plt.subplot(2, 5, i + 1)
-#         plt.imshow(images[i])
-#         plt.title(CLASSES[labels[i]])
-#         plt.axis('off')
-#     plt.show()
+def show_batch(images, labels):
+    for i in range(10):
+        plt.subplot(2, 5, i + 1)
+        plt.imshow(images[i])
+        plt.title(CLASSES[labels[i]])
+        plt.axis('off')
+    plt.show()
 
 
 def train():
@@ -112,9 +130,9 @@ def train():
         val_loss(loss)
         val_accuracy(b_labels, predictions)
 
-    # model.build()
+    # model.build()x
     # model.summary()
-    epochs = 10
+    epochs = 50
     print("Steps per epochs:", steps_per_epoch)
     print("Training...")
     prev_loss = np.inf
@@ -187,7 +205,7 @@ def test():
 if __name__ == "__main__":
     model = MyModel()
 
-    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)
     checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=model)
     manager = tf.train.CheckpointManager(checkpoint, directory="checkpoints", max_to_keep=5)
     checkpoint.restore(manager.latest_checkpoint)
@@ -196,6 +214,6 @@ if __name__ == "__main__":
     else:
         print("Initializing from scratch.")
 
-    # train()
+    train()
     # test()
-    kaggle_test('data/test1')
+    # kaggle_test('data/test1')
